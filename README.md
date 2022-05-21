@@ -1,6 +1,17 @@
 # Crowdin Updater
 
-## Usage
+[![Npm Version](https://img.shields.io/npm/v/@derpierre65/crowdin-updater.svg?style=flat)](https://www.npmjs.org/package/@derpierre65/crowdin-updater)
+[![Downloads](https://img.shields.io/npm/dm/@derpierre65/crowdin-updater.svg?style=flat)](https://www.npmjs.org/package/@derpierre65/crowdin-updater)
+[![Issues](https://img.shields.io/github/issues/derpierre65/crowdin-updater.svg?style=flat)](https://github.com/tmijs/@derpierre65/crowdin-updater/issues)
+[![Node Version](https://img.shields.io/node/v/@derpierre65/crowdin-updater.svg?style=flat)](https://www.npmjs.org/package/@derpierre65/crowdin-updater)
+
+## Install
+
+### Node
+
+```bash
+$ npm i @derpierre65/crowdin-updater
+```
 
 ```js
 const CrowdinUpdater = require('@derpierre65/crowdin-updater');
