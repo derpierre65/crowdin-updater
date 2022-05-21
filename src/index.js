@@ -91,6 +91,7 @@ module.exports = class CrowdinUpdater {
 			.then(({ data }) => {
 				return new Promise((resolve, reject) => {
 					data.pipe(writer);
+
 					let error = null;
 					writer.on('error', (err) => {
 						this.log('error', 'Download failed', err);
