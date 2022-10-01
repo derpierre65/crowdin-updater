@@ -5,6 +5,8 @@ const AdmZip = require('adm-zip');
 
 module.exports = class CrowdinUpdater {
 	constructor(settings) {
+		this.multiFileMode = false;
+
 		this.updateSettings(settings);
 	}
 
@@ -19,7 +21,7 @@ module.exports = class CrowdinUpdater {
 		});
 	}
 
-	log(type, consoleText, logText) {
+	log(type, consoleText, logText = '') {
 		console[type](consoleText);
 		fs.appendFileSync(this.settings.logPath || './error.log', `[${type}] ${consoleText}\n${logText && `${logText}\n\n`}`);
 	}
@@ -41,27 +43,43 @@ module.exports = class CrowdinUpdater {
 		}
 	}
 
-	async update() {
-		const currentLocalization = {};
-		const loadingLocalization = 'Loading current localization files...';
+	loadLocalization(fullPath) {
+		try {
+			return require(fullPath);
+		}
+		catch (error) {
+			this.log('info', `File ${fullPath} not found or failed to load, set empty object`, error.message);
+			return {};
+		}
+	}
 
-		console.group(loadingLocalization);
-		for (const locale of this.settings.locales) {
-			const file = path.join(this.settings.localeDirectory, locale.file);
-
-			let isoCode = locale.iso.toLowerCase();
-			try {
-				currentLocalization[isoCode] = require(file);
+	scanDirectory(readPath, internalPath = '') {
+		const xx = fs.readdirSync(readPath, { withFileTypes: true });
+		let files = {};
+		for (const file of xx) {
+			if (file.isDirectory()) {
+				files = {
+					...files,
+					...this.scanDirectory(path.join(readPath, file.name), internalPath + file.name + '/'),
+				};
 			}
-			catch (e) {
-				this.log('info', `File ${file} not found or failed to load, set locale ${isoCode} to empty object`, e.message);
-				currentLocalization[isoCode] = {};
+			else {
+				files[internalPath + file.name] = this.loadLocalization(path.join(this.settings.localeDirectory, internalPath, file.name));
 			}
 		}
-		console.groupEnd(loadingLocalization);
 
+		return files;
+	}
+
+	group(groupName, callback) {
+		console.group(groupName);
+		callback();
+		console.groupEnd(groupName);
+	}
+
+	async downloadLatestBuild() {
 		// fetch last build from crowdin
-		console.log('Searching for the last finished build...');
+		this.log('info', 'Searching for the last finished build...');
 
 		const { data } = await this.crowdinApi.get(`/projects/${this.settings.projectId}/translations/builds`);
 
@@ -79,11 +97,11 @@ module.exports = class CrowdinUpdater {
 		}
 
 		// fetch the download link from crowdin
-		console.log(`Requesting download for build ${buildId}...`);
+		this.log('info', `Requesting download for build ${buildId}...`);
 		let { data: downloadData } = await this.crowdinApi.get(`/projects/${this.settings.projectId}/translations/builds/${buildId}/download`);
 
 		// download the file
-		console.log('Downloading zip file...');
+		this.log('info', 'Downloading zip file...');
 
 		const writer = fs.createWriteStream(this.settings.tempDirectory);
 		await axios
@@ -92,66 +110,113 @@ module.exports = class CrowdinUpdater {
 				return new Promise((resolve, reject) => {
 					data.pipe(writer);
 
-					let error = null;
-					writer.on('error', (err) => {
-						this.log('error', 'Download failed', err);
+					let writerError = null;
+					writer.on('error', (error) => {
+						this.log('error', 'Download failed', error);
 
-						error = err;
+						writerError = error;
 						writer.close();
-						reject(err);
+						reject(error);
 					});
 					writer.on('close', () => {
-						if (!error) {
-							console.log('Download completed.');
+						if (!writerError) {
+							this.log('info', 'Download completed.');
 							resolve();
 						}
 					});
 				});
-			})
-			.then(() => {
-				console.log('Unzipping...');
-				const zip = new AdmZip(this.settings.tempDirectory, {});
+			});
+	}
 
-				for (const entry of zip.getEntries()) {
-					if (!entry.entryName.endsWith(this.settings.crowdinMainFile)) {
-						continue;
-					}
+	async update() {
+		this.log('info', 'Starting crowdin updater.');
 
-					const locale = entry.entryName.split('/')[0].toLowerCase();
-					const crowdinObject = JSON.parse(entry.getData().toString('utf8'));
+		let currentLocalization = {};
 
-					console.log(`Apply crowdin translations for ${locale}...`);
+		this.group('Loading current localization files...', () => {
+			// search strings in locales array, if one found then the multiple file mode is enabled
+			if (this.settings.locales.find((value) => typeof value === 'string')) {
+				this.multiFileMode = true;
 
-					if (locale !== this.settings.referenceLocale) {
-						currentLocalization[locale] = crowdinObject;
+				if (fs.existsSync(this.settings.localeDirectory)) {
+					currentLocalization = this.scanDirectory(this.settings.localeDirectory);
+				}
+			}
+			// if no strings found in locales array, then the single file mode enabled
+			else {
+				this.multiFileMode = false;
+				for (const locale of this.settings.locales) {
+					currentLocalization[locale.iso.toLowerCase() + '/' + locale.file] = this.loadLocalization(path.join(this.settings.localeDirectory, locale.file));
+				}
+			}
+		});
 
-						continue;
-					}
+		// download latest build
+		await this.downloadLatestBuild();
 
-					this._updateLocalization(currentLocalization[locale], crowdinObject, true);
+		const localeFiles = [];
+		this.group('Unzipping...', () => {
+			const zip = new AdmZip(this.settings.tempDirectory, {});
+
+			for (const entry of zip.getEntries()) {
+				if (entry.isDirectory) {
+					continue;
 				}
 
-				// delete temp zip file
-				console.log('Deleting zip file...');
-				fs.unlinkSync(this.settings.tempDirectory);
-				console.log('Zip file deleted.');
-			});
+				const fileParts = entry.entryName.split('/');
+				const locale = fileParts.shift();
+				const filename = fileParts.join('/');
 
-		const localeFilePath = {};
-		for (const locale of this.settings.locales) {
-			localeFilePath[locale.iso] = locale.file;
-		}
+				if (!filename.startsWith(this.settings.crowdinMainFile) || !filename.endsWith('.json')) {
+					this.log('info', 'Skip ' + filename);
+					continue;
+				}
 
-		for (const locale of Object.keys(localeFilePath)) {
-			if (locale !== this.settings.referenceLocale) {
-				this._updateLocalization(currentLocalization[locale], currentLocalization[this.settings.referenceLocale]);
+				const crowdinObject = JSON.parse(entry.getData().toString('utf8'));
+				const keyName = this.multiFileMode ? filename.replace(this.settings.crowdinMainFile, '') : locale + '.json';
+				const translationFileName = locale + '/' + keyName;
+
+				localeFiles.push({
+					locale,
+					identifier: translationFileName,
+					defaultIdentifier: this.settings.referenceLocale + '/' + (this.multiFileMode ? keyName : this.settings.referenceLocale + '.json'),
+					filename: this.multiFileMode ? translationFileName : this.settings.locales.find((settingLocale) => settingLocale.iso === locale).file,
+				});
+
+				if (locale !== this.settings.referenceLocale || typeof currentLocalization[translationFileName] === 'undefined') {
+					currentLocalization[translationFileName] = crowdinObject;
+					continue;
+				}
+
+				this._updateLocalization(currentLocalization[translationFileName], crowdinObject, true);
 			}
+		});
 
-			const file = path.join(this.settings.localeDirectory, localeFilePath[locale]);
+		// delete temp zip file
+		this.log('info', 'Deleting zip file...');
+		fs.unlinkSync(this.settings.tempDirectory);
+		this.log('info', 'Zip file deleted.');
 
-			fs.writeFileSync(file, JSON.stringify(currentLocalization[locale], null, this.settings.jsonIndent));
-		}
+		// saving files
+		this.group('Saving files', () => {
+			for (const localeFile of localeFiles) {
+				if (localeFile.locale !== this.settings.referenceLocale) {
+					this._updateLocalization(currentLocalization[localeFile.identifier], currentLocalization[localeFile.defaultIdentifier]);
+				}
 
-		console.log('Updated all locales.');
+				const file = path.join(this.settings.localeDirectory, localeFile.filename);
+				const dirname = path.dirname(file);
+
+				// create directory if not exists
+				if (!fs.existsSync(dirname)) {
+					this.log('info', 'Creating directory ' + dirname);
+					fs.mkdirSync(dirname, { recursive: true });
+				}
+
+				fs.writeFileSync(file, JSON.stringify(currentLocalization[localeFile.identifier], null, this.settings.jsonIndent));
+			}
+		});
+
+		this.log('info', 'Updated all locales.');
 	}
-}
+};
