@@ -128,6 +128,44 @@ module.exports = class CrowdinUpdater {
 			});
 	}
 
+	async createBuild() {
+		console.log('Creating Build');
+		const { data } = await api.post(`/projects/${this.settings.projectId}/translations/builds`);
+		const buildId = data.data.id;
+
+		await new Promise((resolve, reject) => {
+			const check = async () => {
+				console.log('Checking build status');
+				try {
+					attempts++;
+					const { data } = await api.get(`/projects/${this.settings.projectId}/translations/builds/${buildId}`);
+					if (data.data.status === 'finished') {
+						console.log('Build finished');
+						clearInterval(interval);
+						resolve();
+					}
+					else if (attempts > 10) {
+						console.log('Build maybe failed:', data.data.status);
+						clearInterval(interval);
+						reject();
+					}
+				}
+				catch (error) {
+					fails++;
+
+					if (fails > 3) {
+						clearInterval(interval);
+						reject(error);
+					}
+				}
+			};
+
+			const interval = setInterval(check, 5000);
+			let attempts = 0;
+			let fails = 0;
+		});
+	}
+
 	async update() {
 		this.log('info', 'Starting crowdin updater.');
 
