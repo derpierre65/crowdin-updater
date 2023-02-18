@@ -130,7 +130,7 @@ module.exports = class CrowdinUpdater {
 
 	async createBuild() {
 		console.log('Creating Build');
-		const { data } = await api.post(`/projects/${this.settings.projectId}/translations/builds`);
+		const { data } = await this.crowdinApi.post(`/projects/${this.settings.projectId}/translations/builds`);
 		const buildId = data.data.id;
 
 		await new Promise((resolve, reject) => {
@@ -138,7 +138,7 @@ module.exports = class CrowdinUpdater {
 				console.log('Checking build status');
 				try {
 					attempts++;
-					const { data } = await api.get(`/projects/${this.settings.projectId}/translations/builds/${buildId}`);
+					const { data } = await this.crowdinApi.get(`/projects/${this.settings.projectId}/translations/builds/${buildId}`);
 					if (data.data.status === 'finished') {
 						console.log('Build finished');
 						clearInterval(interval);
